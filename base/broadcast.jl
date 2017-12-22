@@ -256,13 +256,16 @@ Base.length(bc::Broadcasted) = prod(map(length, axes(bc)))
 Base.size(bc::Broadcasted) = _size(axes(bc))
 _size(::Tuple{Vararg{Base.OneTo}}) = map(length, axes(bc))
 
-Base.start(bc::Broadcasted) = (iter = eachindex(bc); (iter, start(iter)))
-Base.@propagate_inbounds function Base.next(bc::Broadcasted, s)
-    iter, state = s
-    i, newstate = next(iter, state)
-    return (bc[i], (iter, newstate))
+function Base.iterate(bc::Broadcasted)
+    iter = eachindex(bc)
+    iterate(bc, (iter,))
 end
-Base.done(bc::Broadcasted, s) = done(s[1], s[2])
+Base.@propagate_inbounds function Base.iterate(bc::Broadcasted, s)
+    y = iterate(s...)
+    y === nothing && return nothing
+    i, newstate = y
+    return (bc[i], (s[1], newstate))
+end
 
 Base.IteratorSize(::Type{<:Broadcasted{<:Any,<:NTuple{N,Base.OneTo}}}) where {N} = Base.HasShape{N}()
 Base.IteratorEltype(::Type{<:Broadcasted}) = Base.EltypeUnknown()
@@ -769,13 +772,13 @@ const NonleafHandlingStyles = Union{DefaultArrayStyle,ArrayConflict}
     # will widen `dest` as needed to accommodate later values.
     bc′ = preprocess(nothing, bc)
     iter = eachindex(bc′)
-    state = start(iter)
-    if done(iter, state)
+    y = iterate(iter)
+    if y === nothing
         # if empty, take the ElType at face value
         return broadcast_similar(Style(), ElType, axes(bc′), bc′)
     end
     # Initialize using the first value
-    I, state = next(iter, state)
+    I, state = y
     @inbounds val = bc′[I]
     dest = broadcast_similar(Style(), typeof(val), axes(bc′), bc′)
     @inbounds dest[I] = val
@@ -918,8 +921,10 @@ end
 
 function copyto_nonleaf!(dest, bc::Broadcasted, iter, state, count)
     T = eltype(dest)
-    while !done(iter, state)
-        I, state = next(iter, state)
+    while true
+        y = iterate(iter, state)
+        y === nothing && break
+        I, state = y
         @inbounds val = bc[I]
         S = typeof(val)
         if S <: T
@@ -1126,11 +1131,11 @@ See [`broadcast_getindex`](@ref) for examples of the treatment of `inds`.
             X = x
             @nexprs $N d->(shapelen_d = length(shape_d))
             @ncall $N Base.setindex_shape_check X shapelen
-            Xstate = start(X)
+            Xit = iterate(X)
             @inbounds @nloops $N i d->shape_d d->(@nexprs $N k->(j_d_k = Ibcast_d_k ? 1 : i_d)) begin
                 @nexprs $N k->(J_k = @nref $N I_k d->j_d_k)
-                x_el, Xstate = next(X, Xstate)
-                (@nref $N A J) = x_el
+                (@nref $N A J) = Xit[1]
+                Xit = iterate(X, Xit[2])
             end
         end
         A
